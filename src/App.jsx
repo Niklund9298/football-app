@@ -292,7 +292,58 @@ async function checkAdmin(userId) {
 
 //   alert("Login-länk skickad. Vänta på mailet och klicka bara en gång.");
 // }
+async function createSemiFinals() {
+  const a1 = standingsA[0];
+  const a2 = standingsA[1];
+  const b1 = standingsB[0];
+  const b2 = standingsB[1];
 
+  if (!a1 || !a2 || !b1 || !b2) {
+    alert("Alla grupper måste ha minst två lag.");
+    return;
+  }
+
+  const tournamentId = "8f0b89db-4db8-4e71-84e4-40cefa96fdf9";
+
+  await supabase
+    .from("matches")
+    .delete()
+    .eq("tournament_id", tournamentId)
+    .eq("stage", "SEMIFINAL");
+
+  const { error } = await supabase.from("matches").insert([
+    {
+      tournament_id: tournamentId,
+      home_team_id: a1.id,
+      away_team_id: b2.id,
+      home_score: null,
+      away_score: null,
+      played: false,
+      stage: "SEMIFINAL",
+      match_type: "SEMIFINAL",
+      match_order: 100
+    },
+    {
+      tournament_id: tournamentId,
+      home_team_id: b1.id,
+      away_team_id: a2.id,
+      home_score: null,
+      away_score: null,
+      played: false,
+      stage: "SEMIFINAL",
+      match_type: "SEMIFINAL",
+      match_order: 101
+    }
+  ]);
+
+  if (error) {
+    console.error(error);
+    alert("Kunde inte skapa semifinaler.");
+    return;
+  }
+
+  await loadData();
+}
 
 function login() {
   console.log("LOGIN CLICKED:", adminCode);
@@ -499,13 +550,15 @@ function getTeamName(teamId) {
     return;
   }
 
-  const mappedMatches = data.map((x) => ({
-    id: x.id,
-    homeTeamId: x.home_team_id,
-    awayTeamId: x.away_team_id,
-    homeGoals: x.home_score ?? "",
-    awayGoals: x.away_score ?? ""
-  }));
+const mappedMatches = matches.map((x) => ({
+  id: x.id,
+  homeTeamId: x.home_team_id,
+  awayTeamId: x.away_team_id,
+  homeGoals: x.home_score ?? "",
+  awayGoals: x.away_score ?? "",
+  stage: x.stage || x.match_type || "GROUP",
+  winnerTeamId: x.winner_team_id || null
+}));
 
   setTournament((current) => ({
     ...current,
@@ -1151,6 +1204,78 @@ function Logo({ team }) {
 function Styles() {
   return (
     <style>{`
+      @media (max-width: 700px) {
+  .page {
+    padding: 10px;
+  }
+
+  .container {
+    gap: 14px;
+  }
+
+  .hero {
+    padding: 18px;
+    border-radius: 20px;
+  }
+
+  .spectator-hero h1 {
+    font-size: 34px;
+    line-height: 1.05;
+  }
+
+  .spectator-hero p {
+    font-size: 15px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .info-card {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .info-card strong {
+    font-size: 28px;
+  }
+
+  .team-logo-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .logo-card {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .logo-card strong {
+    font-size: 15px;
+  }
+
+  .public-matches-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .public-match {
+    padding: 14px;
+  }
+
+  .public-match div {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  table {
+    min-width: 760px;
+  }
+}
       * { box-sizing: border-box; }
       body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: #0f172a; }
       input, select, button { font: inherit; }
