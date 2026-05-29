@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "./services/supabase";
 
 const STORAGE_KEY = "simple-football-tournament-v2";
 
@@ -105,7 +106,7 @@ function calculateStandings(teams, matches) {
 
 export default function App() {
   const [tournament, setTournament] = useState(loadTournament);
-  const [viewMode, setViewMode] = useState("admin");
+  const [viewMode, setViewMode] = useState("spectator");
   const [teamName, setTeamName] = useState("");
   const [teamLogo, setTeamLogo] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("A");
@@ -113,273 +114,737 @@ export default function App() {
   const [awayTeamId, setAwayTeamId] = useState("");
   const [homeGoals, setHomeGoals] = useState("");
   const [awayGoals, setAwayGoals] = useState("");
+  const [session, setSession] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [adminCode, setAdminCode] = useState("");
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tournament));
-  }, [tournament]);
+useEffect(() => {
+  loadData();
+}, []);
 
-  const allTeams = useMemo(() => [...tournament.groups.A, ...tournament.groups.B], [tournament.groups]);
+useEffect(() => {
+  async function loadSession() {
+    const { data } = await supabase.auth.getSession();
+    setSession(data.session);
 
-  const groupMatches = (group) => {
-    const teamIds = new Set(tournament.groups[group].map((team) => team.id));
-    return tournament.matches.filter(
-      (match) => teamIds.has(match.homeTeamId) && teamIds.has(match.awayTeamId)
-    );
-  };
-
-  const standingsA = useMemo(() => calculateStandings(tournament.groups.A, groupMatches("A")), [tournament]);
-  const standingsB = useMemo(() => calculateStandings(tournament.groups.B, groupMatches("B")), [tournament]);
-
-  const qualifiers = useMemo(() => {
-    const a1 = standingsA[0];
-    const a2 = standingsA[1];
-    const b1 = standingsB[0];
-    const b2 = standingsB[1];
-
-    return {
-      a1,
-      a2,
-      b1,
-      b2,
-      semifinals: [
-        { name: "Semifinal 1", home: a1, away: b2 },
-        { name: "Semifinal 2", home: b1, away: a2 }
-      ]
-    };
-  }, [standingsA, standingsB]);
-
-  function getTeamName(teamId) {
-    return allTeams.find((team) => team.id === teamId)?.name ?? "Okänt lag";
-  }
-
-  function addTeam() {
-    if (!teamName.trim()) return;
-
-    setTournament((current) => ({
-      ...current,
-      groups: {
-        ...current.groups,
-        [selectedGroup]: [...current.groups[selectedGroup], createTeam(teamName, selectedGroup, teamLogo)]
-      }
-    }));
-
-    setTeamName("");
-    setTeamLogo("");
-  }
-
-  function removeTeam(group, teamId) {
-    setTournament((current) => ({
-      ...current,
-      groups: {
-        ...current.groups,
-        [group]: current.groups[group].filter((team) => team.id !== teamId)
-      },
-      matches: current.matches.filter((match) => match.homeTeamId !== teamId && match.awayTeamId !== teamId)
-    }));
-  }
-
-  function renameTeam(group, teamId, field, value) {
-    setTournament((current) => ({
-      ...current,
-      groups: {
-        ...current.groups,
-        [group]: current.groups[group].map((team) =>
-          team.id === teamId ? { ...team, [field]: value } : team
-        )
-      }
-    }));
-  }
-
-  function addMatch() {
-    if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId) return;
-
-    setTournament((current) => ({
-      ...current,
-      matches: [
-        ...current.matches,
-        {
-          ...createMatch(homeTeamId, awayTeamId),
-          homeGoals,
-          awayGoals
-        }
-      ]
-    }));
-
-    setHomeTeamId("");
-    setAwayTeamId("");
-    setHomeGoals("");
-    setAwayGoals("");
-  }
-
-  function generateGroupMatches() {
-    const matches = [];
-
-    ["A", "B"].forEach((group) => {
-      const teams = tournament.groups[group];
-      for (let i = 0; i < teams.length; i++) {
-        for (let j = i + 1; j < teams.length; j++) {
-          matches.push(createMatch(teams[i].id, teams[j].id));
-        }
-      }
-    });
-
-    setTournament((current) => ({
-      ...current,
-      matches
-    }));
-  }
-
-  function updateMatch(matchId, field, value) {
-    setTournament((current) => ({
-      ...current,
-      matches: current.matches.map((match) =>
-        match.id === matchId ? { ...match, [field]: value } : match
-      )
-    }));
-  }
-
-  function removeMatch(matchId) {
-    setTournament((current) => ({
-      ...current,
-      matches: current.matches.filter((match) => match.id !== matchId)
-    }));
-  }
-
-  async function importExcel(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    try {
-      const XLSX = await import("xlsx");
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer);
-
-      const cleanName = (value) =>
-        String(value || "")
-          .split(" ")
-          .filter(Boolean)
-          .join(" ")
-          .trim();
-
-      const normalizeName = (value) => {
-        let text = cleanName(value).toUpperCase();
-        if (text.endsWith(" FC")) text = text.slice(0, -3);
-        return text
-          .split("")
-          .filter((char) => "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖÉÈÜ'´0123456789".includes(char))
-          .join("");
-      };
-
-      const splitMatchText = (value) => {
-        const text = cleanName(value);
-        const upper = text.toUpperCase();
-        const index = upper.indexOf(" VS ");
-        if (index === -1) return [];
-        return [cleanName(text.slice(0, index)), cleanName(text.slice(index + 4))];
-      };
-
-      const getSheetRows = (sheetName) => {
-        const sheet = workbook.Sheets[sheetName];
-        if (!sheet) return [];
-        return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      };
-
-      const readTeamsFromGroupSheet = (sheetName, group) => {
-        const rows = getSheetRows(sheetName);
-        return rows
-          .slice(1)
-          .map((row) => cleanName(row[1]))
-          .filter((name) => name && !name.toUpperCase().includes("GRUPP"))
-          .map((name) => createTeam(name, group, ""));
-      };
-
-      const groupA = readTeamsFromGroupSheet("Blad1", "A");
-      const groupB = readTeamsFromGroupSheet("Blad2", "B");
-      const importedTeams = [...groupA, ...groupB];
-
-      const findOrCreateTeam = (rawName, group) => {
-        const name = cleanName(rawName);
-        const normalized = normalizeName(name);
-
-        let team = importedTeams.find((item) => normalizeName(item.name) === normalized);
-        if (!team) {
-          team = importedTeams.find(
-            (item) => normalizeName(item.name).includes(normalized) || normalized.includes(normalizeName(item.name))
-          );
-        }
-
-        if (!team) {
-          team = createTeam(name, group, "");
-          importedTeams.push(team);
-          if (group === "B") groupB.push(team);
-          else groupA.push(team);
-        }
-
-        return team;
-      };
-
-      const scheduleRows = getSheetRows("Blad3");
-      const importedMatches = [];
-
-      scheduleRows.slice(1).forEach((row) => {
-        const scheduleText = cleanName(row[0]);
-        const matchText = cleanName(row[1]);
-        const matchNumber = Number(row[4]);
-
-        if (!matchText || !matchNumber || matchNumber > 20) return;
-
-        const group = scheduleText.toUpperCase().includes("GRUPP B") ? "B" : "A";
-        const parts = splitMatchText(matchText);
-        if (parts.length !== 2) return;
-
-        const homeTeam = findOrCreateTeam(parts[0], group);
-        const awayTeam = findOrCreateTeam(parts[1], group);
-
-        importedMatches.push(createMatch(homeTeam.id, awayTeam.id));
-      });
-
-      const fileNameParts = file.name.split(".");
-      const tournamentName = fileNameParts.length > 1 ? fileNameParts.slice(0, -1).join(".") : file.name;
-
-      setTournament((current) => ({
-        ...current,
-        name: tournamentName,
-        groups: {
-          A: groupA,
-          B: groupB
-        },
-        matches: importedMatches
-      }));
-
-      event.target.value = "";
-    } catch (error) {
-      console.error(error);
-      alert("Kunde inte läsa Excel-filen. Kör först: npm install xlsx och testa igen.");
+    if (data.session?.user?.id) {
+      await checkAdmin(data.session.user.id);
     }
   }
 
-  function resetTournament() {
-    if (!window.confirm("Vill du verkligen radera hela turneringen?")) return;
-    setTournament(emptyTournament);
+  loadSession();
+
+  const { data: listener } = supabase.auth.onAuthStateChange(
+    async (_event, newSession) => {
+      setSession(newSession);
+
+      if (newSession?.user?.id) {
+        await checkAdmin(newSession.user.id);
+      } else {
+        setIsAdmin(false);
+      }
+    }
+  );
+
+  return () => {
+    listener.subscription.unsubscribe();
+  };
+}, []);
+ 
+async function loadData() {
+  const { data: teams, error: teamsError } = await supabase
+    .from("teams")
+    .select("*");
+
+  if (teamsError) {
+    console.error("Teams error:", teamsError);
+    return;
   }
 
-  if (viewMode === "spectator") {
-    return (
-      <>
-        <Styles />
-        <SpectatorView
-          tournament={tournament}
-          standingsA={standingsA}
-          standingsB={standingsB}
-          matches={tournament.matches}
-          qualifiers={qualifiers}
-          getTeamName={getTeamName}
-          onBack={() => setViewMode("admin")}
-        />
-      </>
-    );
+  const { data: matches, error: matchesError } = await supabase
+    .from("matches")
+    .select("*")
+    .order("match_order", { ascending: true });
+
+  if (matchesError) {
+    console.error("Matches error:", matchesError);
+    return;
   }
 
+  const groupA = teams
+    .filter((x) => x.group_name === "A")
+    .map((x) => ({
+      id: x.id,
+      name: x.name,
+      group: x.group_name,
+      logo: x.logo_url || ""
+    }));
+
+  const groupB = teams
+    .filter((x) => x.group_name === "B")
+    .map((x) => ({
+      id: x.id,
+      name: x.name,
+      group: x.group_name,
+      logo: x.logo_url || ""
+    }));
+
+  const mappedMatches = matches.map((x) => ({
+    id: x.id,
+    homeTeamId: x.home_team_id,
+    awayTeamId: x.away_team_id,
+    homeGoals: x.home_score ?? "",
+    awayGoals: x.away_score ?? ""
+  }));
+
+  setTournament((current) => ({
+    ...current,
+    groups: {
+      A: groupA,
+      B: groupB
+    },
+    matches: mappedMatches
+  }));
+}
+
+const allTeams = useMemo(
+  () => [...tournament.groups.A, ...tournament.groups.B],
+  [tournament.groups]
+);
+
+const groupMatches = (group) => {
+  const teamIds = new Set(
+    tournament.groups[group].map((team) => team.id)
+  );
+
+  return tournament.matches.filter(
+    (match) =>
+      teamIds.has(match.homeTeamId) &&
+      teamIds.has(match.awayTeamId)
+  );
+};
+
+const standingsA = useMemo(
+  () => calculateStandings(tournament.groups.A, groupMatches("A")),
+  [tournament]
+);
+
+const standingsB = useMemo(
+  () => calculateStandings(tournament.groups.B, groupMatches("B")),
+  [tournament]
+);
+
+const qualifiers = useMemo(() => {
+  const a1 = standingsA[0];
+  const a2 = standingsA[1];
+  const b1 = standingsB[0];
+  const b2 = standingsB[1];
+
+  return {
+    a1,
+    a2,
+    b1,
+    b2,
+    semifinals: [
+      { name: "Semifinal 1", home: a1, away: b2 },
+      { name: "Semifinal 2", home: b1, away: a2 }
+    ]
+  };
+}, [standingsA, standingsB]);
+
+//Admin 
+async function checkAdmin(userId) {
+  const { data, error } = await supabase
+    .from("admins")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Admin check error:", error);
+    setIsAdmin(false);
+    return;
+  }
+
+  const admin = !!data;
+  setIsAdmin(admin);
+
+  if (admin) {
+    setViewMode("admin");
+  }
+}
+// async function login() {
+//   if (!loginEmail.trim()) return;
+
+//   const { error } = await supabase.auth.signInWithOtp({
+//     email: loginEmail,
+//     options: {
+//       // emailRedirectTo: "https://niklund9298.github.io/football-app/"
+//        emailRedirectTo: "http://localhost:5173/football-app/"
+//     }
+//   });
+
+//   if (error) {
+//     alert(error.message);
+//     return;
+//   }
+
+//   alert("Login-länk skickad. Vänta på mailet och klicka bara en gång.");
+// }
+
+
+function login() {
+  console.log("LOGIN CLICKED:", adminCode);
+
+  if (adminCode.trim() === "1234") {
+    setIsAdmin(true);
+    setViewMode("admin");
+    return;
+  }
+
+  alert("Fel kod.");
+}
+
+async function logout() {
+  await supabase.auth.signOut();
+  setIsAdmin(false);
+}
+
+function goToAdmin() {
+  setViewMode("admin");
+}
+
+function goToSpectator() {
+  setViewMode("spectator");
+}
+function getTeamName(teamId) {
+  return allTeams.find((team) => team.id === teamId)?.name ?? "Okänt lag";
+}
+ async function addTeam() {
+  console.log("ADD TEAM CLICKED");
+
+  if (!teamName.trim()) {
+    console.log("No team name");
+    return;
+  }
+
+  const payload = {
+    tournament_id: "8f0b89db-4db8-4e71-84e4-40cefa96fdf9",
+    name: teamName,
+    logo_url: teamLogo || null,
+    group_name: selectedGroup
+  };
+
+  console.log("INSERT PAYLOAD:", payload);
+
+  const { data, error } = await supabase
+    .from("teams")
+    .insert(payload)
+    .select()
+    .single();
+
+  console.log("CREATE TEAM DATA:", data);
+  console.log("CREATE TEAM ERROR:", error);
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  await loadData();
+
+  setTeamName("");
+  setTeamLogo("");
+}
+ async function removeTeam(group, teamId) {
+  const { error } = await supabase
+    .from("teams")
+    .delete()
+    .eq("id", teamId);
+
+  if (error) {
+    console.error("Could not delete team:", error);
+    alert("Kunde inte ta bort lag.");
+    return;
+  }
+
+  setTournament((current) => ({
+    ...current,
+    groups: {
+      ...current.groups,
+      [group]: current.groups[group].filter((team) => team.id !== teamId)
+    },
+    matches: current.matches.filter(
+      (match) =>
+        match.homeTeamId !== teamId &&
+        match.awayTeamId !== teamId
+    )
+  }));
+}
+
+ async function renameTeam(group, teamId, field, value) {
+  const columnMap = {
+    name: "name",
+    logo: "logo_url",
+    group: "group_name"
+  };
+
+  const dbColumn = columnMap[field];
+
+  const { error } = await supabase
+    .from("teams")
+    .update({
+      [dbColumn]: value
+    })
+    .eq("id", teamId);
+
+  if (error) {
+    console.error("Could not update team:", error);
+    alert("Kunde inte uppdatera lag.");
+    return;
+  }
+
+  setTournament((current) => ({
+    ...current,
+    groups: {
+      ...current.groups,
+      [group]: current.groups[group].map((team) =>
+        team.id === teamId
+          ? { ...team, [field]: value }
+          : team
+      )
+    }
+  }));
+}
+
+  async function addMatch() {
+  if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId)
+    return;
+
+  const { data, error } = await supabase
+    .from("matches")
+    .insert({
+      tournament_id: "8f0b89db-4db8-4e71-84e4-40cefa96fdf9",
+      home_team_id: homeTeamId,
+      away_team_id: awayTeamId,
+      home_score: homeGoals || null,
+      away_score: awayGoals || null,
+      played: false,
+      match_type: "GROUP"
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Could not create match:", error);
+    alert("Kunde inte skapa match.");
+    return;
+  }
+
+  setTournament((current) => ({
+    ...current,
+    matches: [
+      ...current.matches,
+      {
+        id: data.id,
+        homeTeamId: data.home_team_id,
+        awayTeamId: data.away_team_id,
+        homeGoals: data.home_score ?? "",
+        awayGoals: data.away_score ?? ""
+      }
+    ]
+  }));
+
+  setHomeTeamId("");
+  setAwayTeamId("");
+  setHomeGoals("");
+  setAwayGoals("");
+}
+
+ async function generateGroupMatches() {
+  const matchesToInsert = [];
+  let matchOrder = 1;
+
+  ["A", "B"].forEach((group) => {
+    const teams = tournament.groups[group];
+
+    for (let i = 0; i < teams.length; i++) {
+      for (let j = i + 1; j < teams.length; j++) {
+        matchesToInsert.push({
+          tournament_id: "8f0b89db-4db8-4e71-84e4-40cefa96fdf9",
+          home_team_id: teams[i].id,
+          away_team_id: teams[j].id,
+          home_score: null,
+          away_score: null,
+          played: false,
+          match_type: "GROUP",
+          group_name: group,
+          match_order: matchOrder
+        });
+
+        matchOrder += 1;
+      }
+    }
+  });
+
+  const { data, error } = await supabase
+    .from("matches")
+    .insert(matchesToInsert)
+    .select();
+
+  if (error) {
+    console.error("Could not create matches:", error);
+    alert("Kunde inte skapa matcher.");
+    return;
+  }
+
+  const mappedMatches = data.map((x) => ({
+    id: x.id,
+    homeTeamId: x.home_team_id,
+    awayTeamId: x.away_team_id,
+    homeGoals: x.home_score ?? "",
+    awayGoals: x.away_score ?? ""
+  }));
+
+  setTournament((current) => ({
+    ...current,
+    matches: mappedMatches
+  }));
+}
+
+  async function updateMatch(matchId, field, value) {
+  setTournament((current) => ({
+    ...current,
+    matches: current.matches.map((match) =>
+      match.id === matchId ? { ...match, [field]: value } : match
+    )
+  }));
+
+  const match = tournament.matches.find((m) => m.id === matchId);
+  if (!match) return;
+
+  const updatedMatch = {
+    ...match,
+    [field]: value
+  };
+
+  const { error } = await supabase
+    .from("matches")
+    .update({
+      home_score:
+        updatedMatch.homeGoals === "" ? null : Number(updatedMatch.homeGoals),
+      away_score:
+        updatedMatch.awayGoals === "" ? null : Number(updatedMatch.awayGoals),
+      played:
+        updatedMatch.homeGoals !== "" && updatedMatch.awayGoals !== ""
+    })
+    .eq("id", matchId);
+
+  if (error) {
+    console.error("Could not update match:", error);
+    alert("Kunde inte spara resultatet.");
+  }
+}
+
+ async function removeMatch(matchId) {
+  const { error } = await supabase
+    .from("matches")
+    .delete()
+    .eq("id", matchId);
+
+  if (error) {
+    console.error(error);
+    alert("Kunde inte ta bort match.");
+    return;
+  }
+
+  setTournament((current) => ({
+    ...current,
+    matches: current.matches.filter(
+      (match) => match.id !== matchId
+    )
+  }));
+}
+ async function importExcel(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  try {
+    const XLSX = await import("xlsx");
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer);
+
+    const tournamentId = "8f0b89db-4db8-4e71-84e4-40cefa96fdf9";
+
+    const cleanName = (value) =>
+      String(value || "")
+        .split(" ")
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+    const normalizeName = (value) => {
+      let text = cleanName(value).toUpperCase();
+      if (text.endsWith(" FC")) text = text.slice(0, -3);
+
+      return text
+        .split("")
+        .filter((char) =>
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖÉÈÜ'´0123456789".includes(char)
+        )
+        .join("");
+    };
+
+    const splitMatchText = (value) => {
+      const text = cleanName(value);
+      const upper = text.toUpperCase();
+      const index = upper.indexOf(" VS ");
+
+      if (index === -1) return [];
+
+      return [
+        cleanName(text.slice(0, index)),
+        cleanName(text.slice(index + 4))
+      ];
+    };
+
+    const getSheetRows = (sheetName) => {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) return [];
+
+      return XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        defval: ""
+      });
+    };
+
+    const readTeamsFromGroupSheet = (sheetName, group) => {
+      const rows = getSheetRows(sheetName);
+
+      return rows
+        .slice(1)
+        .map((row) => cleanName(row[1]))
+        .filter((name) => name && !name.toUpperCase().includes("GRUPP"))
+        .map((name) => ({
+          tournament_id: tournamentId,
+          name,
+          logo_url: null,
+          group_name: group
+        }));
+    };
+
+    const teamsToInsert = [
+      ...readTeamsFromGroupSheet("Blad1", "A"),
+      ...readTeamsFromGroupSheet("Blad2", "B")
+    ];
+
+    const { error: deleteMatchesError } = await supabase
+      .from("matches")
+      .delete()
+      .eq("tournament_id", tournamentId);
+
+    if (deleteMatchesError) {
+      console.error(deleteMatchesError);
+      alert("Kunde inte rensa gamla matcher.");
+      return;
+    }
+
+    const { error: deleteTeamsError } = await supabase
+      .from("teams")
+      .delete()
+      .eq("tournament_id", tournamentId);
+
+    if (deleteTeamsError) {
+      console.error(deleteTeamsError);
+      alert("Kunde inte rensa gamla lag.");
+      return;
+    }
+
+    const { data: insertedTeams, error: insertTeamsError } = await supabase
+      .from("teams")
+      .insert(teamsToInsert)
+      .select();
+
+    if (insertTeamsError) {
+      console.error(insertTeamsError);
+      alert("Kunde inte importera lag.");
+      return;
+    }
+
+    const findTeam = (rawName) => {
+      const normalized = normalizeName(rawName);
+
+      let team = insertedTeams.find(
+        (item) => normalizeName(item.name) === normalized
+      );
+
+      if (!team) {
+        team = insertedTeams.find(
+          (item) =>
+            normalizeName(item.name).includes(normalized) ||
+            normalized.includes(normalizeName(item.name))
+        );
+      }
+
+      return team;
+    };
+
+    const scheduleRows = getSheetRows("Blad3");
+    const matchesToInsert = [];
+
+    scheduleRows.slice(1).forEach((row) => {
+      const scheduleText = cleanName(row[0]);
+      const matchText = cleanName(row[1]);
+      const matchNumber = Number(row[4]);
+
+      if (!matchText || !matchNumber || matchNumber > 20) return;
+
+      const group = scheduleText.toUpperCase().includes("GRUPP B")
+        ? "B"
+        : "A";
+
+      const parts = splitMatchText(matchText);
+      if (parts.length !== 2) return;
+
+      const homeTeam = findTeam(parts[0]);
+      const awayTeam = findTeam(parts[1]);
+
+      if (!homeTeam || !awayTeam) {
+        console.warn("Could not find team for match:", matchText);
+        return;
+      }
+
+      matchesToInsert.push({
+        tournament_id: tournamentId,
+        home_team_id: homeTeam.id,
+        away_team_id: awayTeam.id,
+        home_score: null,
+        away_score: null,
+        played: false,
+        match_type: "GROUP",
+        group_name: group,
+        match_order: matchNumber
+      });
+    });
+
+    const { error: insertMatchesError } = await supabase
+      .from("matches")
+      .insert(matchesToInsert);
+
+    if (insertMatchesError) {
+      console.error(insertMatchesError);
+      alert("Kunde inte importera matcher.");
+      return;
+    }
+
+    await loadData();
+
+    event.target.value = "";
+    alert("Excel-importen är klar!");
+  } catch (error) {
+    console.error(error);
+    alert("Kunde inte läsa Excel-filen.");
+  }
+}
+
+ async function resetTournament() {
+  if (!window.confirm("Vill du verkligen radera hela turneringen?"))
+    return;
+
+  const tournamentId = "8f0b89db-4db8-4e71-84e4-40cefa96fdf9";
+
+  const { error: matchesError } = await supabase
+    .from("matches")
+    .delete()
+    .eq("tournament_id", tournamentId);
+
+  if (matchesError) {
+    console.error(matchesError);
+    alert("Kunde inte rensa matcher.");
+    return;
+  }
+
+  const { error: teamsError } = await supabase
+    .from("teams")
+    .delete()
+    .eq("tournament_id", tournamentId);
+
+  if (teamsError) {
+    console.error(teamsError);
+    alert("Kunde inte rensa lag.");
+    return;
+  }
+
+  await loadData();
+}
+
+
+if (viewMode === "spectator") {
+  return (
+    <>
+      <Styles />
+      <SpectatorView
+        tournament={tournament}
+        standingsA={standingsA}
+        standingsB={standingsB}
+        matches={tournament.matches}
+        qualifiers={qualifiers}
+        getTeamName={getTeamName}
+       onBack={goToAdmin}
+      />
+    </>
+  );
+}
+
+
+if (!isAdmin) {
+  return (
+    <>
+      <Styles />
+      <main className="page admin-page">
+        <div className="container">
+          <section className="hero admin-hero">
+            <div>
+              <p className="eyebrow">Admin login</p>
+              <input
+                className="title-input"
+                value="Logga in som admin"
+                readOnly
+              />
+              <p className="muted">
+                Ange admin-email för att få en login-länk.
+              </p>
+            </div>
+
+            <div className="button-row">
+              <button
+                className="btn green"
+               onClick={goToSpectator}
+              >
+                Visa åskådarsida
+              </button>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="form-grid">
+             <input
+                placeholder="Admin-kod"
+                value={adminCode}
+                onChange={(e) => setAdminCode(e.target.value)}
+              />
+
+             <button className="btn dark" onClick={login}>
+              Logga in
+            </button>
+            </div>
+          </section>
+        </div>
+      </main>
+    </>
+  );
+}
   return (
     <>
       <Styles />
@@ -397,9 +862,10 @@ export default function App() {
             </div>
 
             <div className="button-row">
-              <button className="btn green" onClick={() => setViewMode("spectator")}>Visa åskådarsida</button>
+              <button className="btn green" onClick={goToSpectator}>Visa åskådarsida</button>
               <button className="btn dark" onClick={generateGroupMatches}>Skapa 20 gruppmatcher</button>
               <button className="btn danger" onClick={resetTournament}>Rensa allt</button>
+              <button className="btn light" onClick={logout}>Logga ut</button>
             </div>
           </section>
 
